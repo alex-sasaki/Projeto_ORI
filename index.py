@@ -118,7 +118,7 @@ class MotorBuscaTMDB:
         # Retorna a lista com os dados dos filmes estruturados
         return [self.indice_primario_id[idx] for idx in ids_finais]
 
-# --- MENU INTERATIVO ---
+# MENU 
 if __name__ == "__main__":
     motor = MotorBuscaTMDB()
     
@@ -128,11 +128,11 @@ if __name__ == "__main__":
     try:
         motor.carregar_e_indexar(arquivo_csv)
     except FileNotFoundError:
-        print(f"❌ Arquivo '{arquivo_csv}' não encontrado na pasta local.")
+        print(f"Arquivo '{arquivo_csv}' não encontrado na pasta local.")
         exit()
 
     while True:
-        print("1. Buscar por ID | 2. Buscar por Título | 3. Busca por Título + Gênero) | 4. Sair")
+        print("1. Buscar por ID | 2. Buscar por Título | 3. Busca por Título + Gênero | 4. Sair")
         opcao = input("Escolha: ")
         
         if opcao == "1":
