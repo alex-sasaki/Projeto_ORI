@@ -1,79 +1,56 @@
-import collections
 import csv
+import collections
 import re
 import time
 
-
 class MotorBuscaTMDB:
-
     def __init__(self):
-        # Usamos uma lista ordenada para o índice primário
-        self.indice_primario_ordenado = []  # Lista de dicionários ordenada por ID
+        # Índice Primário (Hash Table)
+        self.indice_primario_id = {}
         
-        # Índices Secundários Invertidos para termos e categorias
+        # Índices Secundários Invertidos
         self.indice_genero = collections.defaultdict(list)
         self.indice_palavras_titulo = collections.defaultdict(list)
 
     def _normalizar_texto(self, texto):
-        if not texto:
-            return ""
+        """Pipeline de ORI: remove pontuação e padroniza em minúsculo."""
+        if not texto: return ""
         return re.sub(r'[^\w\s]', '', texto).lower()
 
     def _extrair_ano(self, data_str):
-        if not data_str or len(data_str) < 4:
-            return "Desconhecido"
+        if not data_str or len(data_str) < 4: return "Desconhecido"
         return data_str[:4]
 
-    def _busca_binaria_id(self, id_alvo):
-        """Implementação manual de Busca Binária O(log n) sobre o Índice Primário."""
-        esquerda = 0
-        direita = len(self.indice_primario_ordenado) - 1
-
-        while esquerda <= direita:
-            meio = (esquerda + direita) // 2
-            filme_atual = self.indice_primario_ordenado[meio]
-
-            if filme_atual["id"] == id_alvo:
-                return filme_atual
-            elif filme_atual["id"] < id_alvo:
-                esquerda = meio + 1
-            else:
-                direita = meio - 1
-        return None
-
     def carregar_e_indexar(self, caminho_csv):
-        print(f"Indexando arquivo do TMDB de forma sequencial ordenada")
+        print(f"Indexando arquivo do TMDB: {caminho_csv}")
         tempo_inicio = time.time()
         count = 0
 
         with open(caminho_csv, mode='r', encoding='utf-8') as arquivo:
             leitor = csv.DictReader(arquivo)
-
+            
             for linha in leitor:
                 try:
-                    if not linha['id'] or not linha['title']:
+                    # Validação das colunas exatas do dataset do TMDB
+                    if not linha['id'] or not linha['title']: 
                         continue
 
                     id_filme = int(linha['id'])
                     titulo = linha['title']
                     ano = self._extrair_ano(linha['release_date'])
                     nota = linha.get('vote_average', '0.0')
-                    generos_lista = [
-                        g.strip()
-                        for g in linha['genres'].split(',')
-                        if g.strip()
-                    ]
+                    
+                    # Separa a string de gêneros do TMDB (Ex: "Action, Adventure")
+                    generos_lista = [g.strip() for g in linha['genres'].split(',') if g.strip()]
 
-                    filme = {
+                    # Salva o registro estruturado
+                    self.indice_primario_id[id_filme] = {
                         "id": id_filme,
                         "titulo": titulo,
                         "ano": ano,
                         "generos": generos_lista,
-                        "nota": nota,
+                        "nota": nota
                     }
-
-                    # Alimenta o Índice Primário Sequencial
-                    self.indice_primario_ordenado.append(filme)
 
                     # Alimenta o Índice Secundário Invertido de Gêneros
                     for genero in generos_lista:
@@ -82,77 +59,66 @@ class MotorBuscaTMDB:
                     # Alimenta o Índice Secundário Invertido de Palavras do Título
                     palavras = self._normalizar_texto(titulo).split()
                     for palavra in palavras:
-                        if (
-                            not self.indice_palavras_titulo[palavra]
-                            or self.indice_palavras_titulo[palavra][-1]
-                            != id_filme
-                        ):
-                            self.indice_palavras_titulo[palavra].append(
-                                id_filme
-                            )
+                        if not self.indice_palavras_titulo[palavra] or self.indice_palavras_titulo[palavra][-1] != id_filme:
+                            self.indice_palavras_titulo[palavra].append(id_filme)
 
                     count += 1
                 except Exception:
                     continue
 
-        # Garante que o índice primário está ordenado por ID para permitir Busca Binária
-        print("Ordenando o Índice Primário para habilitar Busca Binária")
-        self.indice_primario_ordenado.sort(key=lambda x: x["id"])
-
-        print(
-            f"{count} filmes indexados em {time.time() - tempo_inicio:.2f} segundos.\n"
-        )
+        print(f"{count} filmes indexados em {time.time() - tempo_inicio:.2f} segundos.\n")
 
     def buscar_por_id(self, id_filme):
-        """Usa Busca Binária em vez de look-up de tabela hash."""
-        return self._busca_binaria_id(id_filme)
+        return self.indice_primario_id.get(id_filme, None)
 
     def buscar_por_termo_titulo(self, termo):
+        """Busca textual que aceita múltiplas palavras (Busca Booleana AND implícita)."""
         palavras_busca = self._normalizar_texto(termo).split()
+        
         if not palavras_busca:
             return []
-
-        # Intersecção dos ponteiros (IDs) do Índice Secundário Invertido
+        
+        # Pega a lista de IDs da primeira palavra para iniciar o conjunto de resultados
         primeira_palavra = palavras_busca[0]
         ids_finais = set(self.indice_palavras_titulo.get(primeira_palavra, []))
-
+        
+        # Faz a intersecção com as listas de IDs das próximas palavras
         for palavra in palavras_busca[1:]:
             ids_palavra_atual = set(self.indice_palavras_titulo.get(palavra, []))
             ids_finais = ids_finais.intersection(ids_palavra_atual)
+            
+            # Se em algum momento a intersecção ficar vazia, não há motivo para continuar
             if not ids_finais:
                 break
-
-        # Para recuperar os dados do filme, usamos a Busca Binária para cada ID do índice invertido
-        resultados = []
-        for idx in ids_finais:
-            filme = self._busca_binaria_id(idx)
-            if filme:
-                resultados.append(filme)
-        return resultados
+                
+        # Retorna os dados dos filmes correspondentes aos IDs filtrados
+        return [self.indice_primario_id[idx] for idx in ids_finais]
 
     def busca_booleana_and(self, termo_titulo, genero):
+        """Busca avançada: Múltiplas palavras no título AND um gênero específico."""
         palavras_busca = self._normalizar_texto(termo_titulo).split()
         genero_norm = genero.lower()
-
+        
+        # Pega os IDs do gênero selecionado para iniciar o nosso conjunto base
         ids_finais = set(self.indice_genero.get(genero_norm, []))
+        
+        # Se o gênero digitado não existir ou não tiver filmes, retorna vazio imediatamente
         if not ids_finais:
             return []
-
+            
+        # Faz a intersecção sucessiva com cada palavra digitada para o título
         for palavra in palavras_busca:
             ids_palavra = set(self.indice_palavras_titulo.get(palavra, []))
             ids_finais = ids_finais.intersection(ids_palavra)
+            
+            # Otimização: se o conjunto zerar, interrompe o loop mais cedo
             if not ids_finais:
                 break
+                
+        # Retorna a lista com os dados dos filmes estruturados
+        return [self.indice_primario_id[idx] for idx in ids_finais]
 
-        # Recupera os dados via Busca Binária no Índice Primário
-        resultados = []
-        for idx in ids_finais:
-            filme = self._busca_binaria_id(idx)
-            if filme:
-                resultados.append(filme)
-        return resultados
-    
-    # MENU 
+# MENU 
 if __name__ == "__main__":
     motor = MotorBuscaTMDB()
     
