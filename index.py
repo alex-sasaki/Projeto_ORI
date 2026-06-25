@@ -1,8 +1,3 @@
-import csv
-import collections
-import re
-import time
-
 import polars as pl
 import collections
 import re
@@ -11,6 +6,7 @@ import pickle
 import os
 
 class MotorBuscaTMDB:
+
     def __init__(self):
         # índices na memória RAM:
         self.indice_primario_id = {}
@@ -104,56 +100,55 @@ class MotorBuscaTMDB:
 
 
     def buscar_por_id(self, id_filme):
-        return self.indice_primario_id.get(id_filme, None)
+        """Usa Busca Binária em vez de look-up de tabela hash."""
+        return self._busca_binaria_id(id_filme)
 
     def buscar_por_termo_titulo(self, termo):
-        """Busca textual que aceita múltiplas palavras (Busca Booleana AND implícita)."""
         palavras_busca = self._normalizar_texto(termo).split()
-        
         if not palavras_busca:
             return []
-        
-        # Pega a lista de IDs da primeira palavra para iniciar o conjunto de resultados
+
+        # Intersecção dos ponteiros (IDs) do Índice Secundário Invertido
         primeira_palavra = palavras_busca[0]
         ids_finais = set(self.indice_palavras_titulo.get(primeira_palavra, []))
-        
-        # Faz a intersecção com as listas de IDs das próximas palavras
+
         for palavra in palavras_busca[1:]:
             ids_palavra_atual = set(self.indice_palavras_titulo.get(palavra, []))
             ids_finais = ids_finais.intersection(ids_palavra_atual)
-            
-            # Se em algum momento a intersecção ficar vazia, não há motivo para continuar
             if not ids_finais:
                 break
-                
-        # Retorna os dados dos filmes correspondentes aos IDs filtrados
-        return [self.indice_primario_id[idx] for idx in ids_finais]
+
+        # Para recuperar os dados do filme, usamos a Busca Binária para cada ID do índice invertido
+        resultados = []
+        for idx in ids_finais:
+            filme = self._busca_binaria_id(idx)
+            if filme:
+                resultados.append(filme)
+        return resultados
 
     def busca_booleana_and(self, termo_titulo, genero):
-        """Busca avançada: Múltiplas palavras no título AND um gênero específico."""
         palavras_busca = self._normalizar_texto(termo_titulo).split()
         genero_norm = genero.lower()
-        
-        # Pega os IDs do gênero selecionado para iniciar o nosso conjunto base
+
         ids_finais = set(self.indice_genero.get(genero_norm, []))
-        
-        # Se o gênero digitado não existir ou não tiver filmes, retorna vazio imediatamente
         if not ids_finais:
             return []
-            
-        # Faz a intersecção sucessiva com cada palavra digitada para o título
+
         for palavra in palavras_busca:
             ids_palavra = set(self.indice_palavras_titulo.get(palavra, []))
             ids_finais = ids_finais.intersection(ids_palavra)
-            
-            # Otimização: se o conjunto zerar, interrompe o loop mais cedo
             if not ids_finais:
                 break
-                
-        # Retorna a lista com os dados dos filmes estruturados
-        return [self.indice_primario_id[idx] for idx in ids_finais]
 
-# MENU 
+        # Recupera os dados via Busca Binária no Índice Primário
+        resultados = []
+        for idx in ids_finais:
+            filme = self._busca_binaria_id(idx)
+            if filme:
+                resultados.append(filme)
+        return resultados
+    
+    # MENU 
 if __name__ == "__main__":
     motor = MotorBuscaTMDB()
     
