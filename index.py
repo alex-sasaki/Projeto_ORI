@@ -1,107 +1,103 @@
+import polars as pl
 import collections
-import csv
 import re
 import time
-
+import pickle
+import os
 
 class MotorBuscaTMDB:
 
     def __init__(self):
-        # Usamos uma lista ordenada para o índice primário
-        self.indice_primario_ordenado = []  # Lista de dicionários ordenada por ID
-        
-        # Índices Secundários Invertidos para termos e categorias
+        # índices na memória RAM:
+        self.indice_primario_id = {}
         self.indice_genero = collections.defaultdict(list)
         self.indice_palavras_titulo = collections.defaultdict(list)
 
     def _normalizar_texto(self, texto):
-        if not texto:
-            return ""
-        return re.sub(r'[^\w\s]', '', texto).lower()
+        if not texto: return ""
+        return re.sub(r'[^\w\s]', '', str(texto)).lower()
 
     def _extrair_ano(self, data_str):
-        if not data_str or len(data_str) < 4:
+        data_str = str(data_str)
+        if not data_str or len(data_str) < 4 or data_str == 'None': 
             return "Desconhecido"
         return data_str[:4]
+    
+    # Tenta carregar do cache (Pickle), se falhar, lê do zero (Polars)
+    def carregar_e_indexar(self, caminho_csv, arquivo_cache="indices_tmdb.pkl"):
+        # tenta carregar o arquivo cache
+        if os.path.exists(arquivo_cache): # se o cache existe
+            print(f"[{time.strftime('%H:%M:%S')}] Encontrado cache binário. Carregando direto para a RAM...")
+            tempo_inicio = time.time()
+            
+            with open(arquivo_cache, 'rb') as f:
+                cache = pickle.load(f)
+                self.indice_primario_id = cache['primario']
+                self.indice_genero = cache['generos']
+                self.indice_palavras_titulo = cache['palavras']
+                
+            print(f"-> Sucesso! {len(self.indice_primario_id)} filmes prontos em {time.time() - tempo_inicio:.3f} segundos.\n")
+            return
 
-    def _busca_binaria_id(self, id_alvo):
-        """Implementação manual de Busca Binária O(log n) sobre o Índice Primário."""
-        esquerda = 0
-        direita = len(self.indice_primario_ordenado) - 1
-
-        while esquerda <= direita:
-            meio = (esquerda + direita) // 2
-            filme_atual = self.indice_primario_ordenado[meio]
-
-            if filme_atual["id"] == id_alvo:
-                return filme_atual
-            elif filme_atual["id"] < id_alvo:
-                esquerda = meio + 1
-            else:
-                direita = meio - 1
-        return None
-
-    def carregar_e_indexar(self, caminho_csv):
-        print(f"Indexando arquivo do TMDB de forma sequencial ordenada")
+        # caso não exista o arquivo, inicia o processamento de indexação
+        print(f"[{time.strftime('%H:%M:%S')}] Cache não encontrado. Iniciando motor Rust/Polars para ler o CSV...")
         tempo_inicio = time.time()
-        count = 0
+        
+        colunas_desejadas = ['id', 'title', 'release_date', 'vote_average', 'genres']
+        try:
+            df = pl.read_csv(caminho_csv, columns=colunas_desejadas, ignore_errors=True)
+            df = df.drop_nulls(subset=['id', 'title'])
+            registros = df.to_dicts()
+        except Exception as e:
+            print(f"Erro crítico ao ler CSV: {e}")
+            return
 
-        with open(caminho_csv, mode='r', encoding='utf-8') as arquivo:
-            leitor = csv.DictReader(arquivo)
+        print(f"-> Leitura do disco concluída. Indexando {len(registros)} filmes em Tabelas Hash...")
+        
+        # preenche cada índice
+        for linha in registros:
+            try:
+                id_filme = linha['id']
+                titulo = linha['title']
+                ano = self._extrair_ano(linha['release_date'])
+                nota = str(linha['vote_average']) if linha['vote_average'] else '0.0'
+                
+                generos_str = linha['genres'] if linha['genres'] else ""
+                generos_lista = [g.strip() for g in generos_str.split(',') if g.strip()]
 
-            for linha in leitor:
-                try:
-                    if not linha['id'] or not linha['title']:
-                        continue
+                # primário
+                self.indice_primario_id[id_filme] = {
+                    "id": id_filme,
+                    "titulo": titulo,
+                    "ano": ano,
+                    "generos": generos_lista,
+                    "nota": nota
+                }
 
-                    id_filme = int(linha['id'])
-                    titulo = linha['title']
-                    ano = self._extrair_ano(linha['release_date'])
-                    nota = linha.get('vote_average', '0.0')
-                    generos_lista = [
-                        g.strip()
-                        for g in linha['genres'].split(',')
-                        if g.strip()
-                    ]
+                # secundário de gêneros
+                for genero in generos_lista:
+                    self.indice_genero[genero.lower()].append(id_filme)
 
-                    filme = {
-                        "id": id_filme,
-                        "titulo": titulo,
-                        "ano": ano,
-                        "generos": generos_lista,
-                        "nota": nota,
-                    }
+                # palvars em títulos
+                palavras = self._normalizar_texto(titulo).split()
+                for palavra in palavras:
+                    if not self.indice_palavras_titulo[palavra] or self.indice_palavras_titulo[palavra][-1] != id_filme:
+                        self.indice_palavras_titulo[palavra].append(id_filme)
 
-                    # Alimenta o Índice Primário Sequencial
-                    self.indice_primario_ordenado.append(filme)
+            except Exception:
+                continue
 
-                    # Alimenta o Índice Secundário Invertido de Gêneros
-                    for genero in generos_lista:
-                        self.indice_genero[genero.lower()].append(id_filme)
+        # salvando o processamento anterior num arquivo binário
+        print(f"-> Indexação finalizada. Salvando estado na memória para a próxima execução...")
+        with open(arquivo_cache, 'wb') as f: # write binary
+            pickle.dump({
+                'primario': self.indice_primario_id,
+                'generos': self.indice_genero,
+                'palavras': self.indice_palavras_titulo
+            }, f)
+            
+        print(f"-> Processo completo e cache gerado em {time.time() - tempo_inicio:.2f} segundos.\n")
 
-                    # Alimenta o Índice Secundário Invertido de Palavras do Título
-                    palavras = self._normalizar_texto(titulo).split()
-                    for palavra in palavras:
-                        if (
-                            not self.indice_palavras_titulo[palavra]
-                            or self.indice_palavras_titulo[palavra][-1]
-                            != id_filme
-                        ):
-                            self.indice_palavras_titulo[palavra].append(
-                                id_filme
-                            )
-
-                    count += 1
-                except Exception:
-                    continue
-
-        # Garante que o índice primário está ordenado por ID para permitir Busca Binária
-        print("Ordenando o Índice Primário para habilitar Busca Binária")
-        self.indice_primario_ordenado.sort(key=lambda x: x["id"])
-
-        print(
-            f"{count} filmes indexados em {time.time() - tempo_inicio:.2f} segundos.\n"
-        )
 
     def buscar_por_id(self, id_filme):
         """Usa Busca Binária em vez de look-up de tabela hash."""
